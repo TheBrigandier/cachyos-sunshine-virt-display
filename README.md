@@ -174,16 +174,22 @@ down the virtual display; you still choose whatever `Command` you want.
      ```
      Like `sunshine.service`, this is tied to `graphical-session.target`
      (via `PartOf`/`WantedBy`), so it fires on every graphical login —
-     autologin at boot or a normal manual login alike. Its `After=` is
-     deliberately pinned to `plasma-kwin_wayland.service` and
-     `plasma-ksmserver.service` specifically, **not**
-     `graphical-session.target` itself — on one test system,
-     `plasma-powerdevil.service` (also pulled in by that target) took 7+
-     seconds to start, which delayed the target and left the desktop
-     visible and unlocked the whole time. Ordering on KWin/ksmserver
-     directly means the lock fires within about a second of them being up,
-     regardless of how long slower, lock-irrelevant units elsewhere in the
-     session take to start. Confirmed on Plasma 6.7.2/CachyOS: the session
+     autologin at boot or a normal manual login alike. Rather than relying
+     on unit ordering, it waits (event-driven, via `gdbus wait`) for KWin to
+     publish the screen locker's `org.freedesktop.ScreenSaver` D-Bus name,
+     then calls `Lock()` on it directly. That is the earliest moment a lock
+     can take effect, and it's well before plasmashell draws the desktop.
+     Two timing traps this avoids:
+     - Ordering after `graphical-session.target` is too slow: on one test
+       system, `plasma-powerdevil.service` (pulled in by that target) took
+       7+ seconds to start, leaving the desktop visible and unlocked.
+     - Ordering after `plasma-kwin_wayland.service`/`plasma-ksmserver.service`
+       alone is too early on Plasma 6.8+. KWin's unit counts as started
+       before KWin itself has initialized, so a `loginctl lock-session` sent
+       at that point is silently dropped and the session stays unlocked.
+       Plasma 6.7 happened to hide this because ksmserver waited on kcminit.
+
+     Confirmed on Plasma 6.7.2/CachyOS: the session
      goes straight to the lock screen on boot with no visible unlocked
      desktop, and Sunshine's virtual-monitor capture keeps streaming
      normally while locked — connecting via Moonlight shows the real lock

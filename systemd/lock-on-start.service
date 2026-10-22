@@ -2,14 +2,25 @@
 # including one created by your login manager's autologin — so autologin
 # never leaves an unlocked desktop sitting on the physical console.
 #
-# Ordered after kwin_wayland/ksmserver specifically, NOT graphical-session.target:
-# that target also waits on plasma-powerdevil.service, which can take several
-# seconds to start (7s+ measured on one system) despite being irrelevant to
-# whether the desktop can host a lock screen. KWin and ksmserver are what
-# actually need to be up for the lock to take effect immediately, so ordering
-# on them directly avoids inheriting graphical-session.target's slowest
-# dependency. Still pulled in by / tied to graphical-session.target via
-# PartOf/WantedBy so it starts and stops with the rest of the session.
+# How it avoids racing the screen locker:
+# On Plasma 6 the screen locker (kscreenlocker) runs inside kwin_wayland,
+# which publishes org.freedesktop.ScreenSaver on the session bus once the
+# locker is ready. A lock request sent before that point is silently lost.
+# Ordering on systemd units alone isn't enough: plasma-kwin_wayland.service
+# counts as "started" as soon as its wrapper process claims a bus name,
+# before kwin itself has initialized. Plasma 6.8 also dropped ksmserver's
+# ordering on kcminit, which used to delay things long enough to hide this.
+#
+# So instead of a fixed ordering, `gdbus wait` blocks until kwin claims the
+# ScreenSaver name. That's event-driven, with no polling interval. Then Lock()
+# is called on it directly. kscreenlocker only replies to Lock() once the lock
+# is established, so the unit finishing successfully means the session is
+# actually locked. plasmashell (the desktop) starts well after kwin, so the
+# lock lands before any desktop is drawn.
+#
+# Not ordered after graphical-session.target: that target also waits on
+# plasma-powerdevil.service, which can take 7s+ to start. PartOf/WantedBy
+# still tie this unit to the session lifecycle.
 #
 # Install:
 #   cp systemd/lock-on-start.service ~/.config/systemd/user/
@@ -21,12 +32,14 @@
 
 [Unit]
 Description=Lock session immediately after graphical login
-After=plasma-kwin_wayland.service plasma-ksmserver.service
+After=plasma-kwin_wayland.service
 PartOf=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/loginctl lock-session
+ExecStartPre=/usr/bin/gdbus wait --session --timeout 60 org.freedesktop.ScreenSaver
+ExecStart=/usr/bin/gdbus call --session --dest org.freedesktop.ScreenSaver --object-path /ScreenSaver --method org.freedesktop.ScreenSaver.Lock
+TimeoutStartSec=90
 
 [Install]
 WantedBy=graphical-session.target
